@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Baggage & Delivery Fast Scanner</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- ZXing Library for high-speed multi-format barcode & QR scanning -->
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <style>
+    /* Conveyor belt animation for industrial feel */
+    @keyframes belt-move {
+      0% { background-position: 0 0; }
+      100% { background-position: 40px 0; }
+    }
+    .conveyor-bg {
+      background: repeating-linear-gradient(
+        45deg,
+        #1e293b,
+        #1e293b 10px,
+        #0f172a 10px,
+        #0f172a 20px
+      );
+      animation: belt-move 2s linear infinite;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-mono min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-slate-800 border-b border-slate-700 px-4 py-3 flex justify-between items-center">
+    <div class="flex items-center gap-3">
+      <div class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
+      <h1 class="text-lg font-bold tracking-wider text-emerald-400">FAST SCANNER // BAGGAGE & PARCEL</h1>
+    </div>
+    <div class="text-xs text-slate-400">
+      MODE: <span class="text-amber-400 font-bold">AUTO-DETECT</span>
+    </div>
+  </header>
+
+  <main class="flex-1 p-4 max-w-7xl w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4">
+    
+    <!-- Left Column: Scanner Window & Controls -->
+    <section class="lg:col-span-5 flex flex-col gap-4">
+      
+      <!-- Video Container -->
+      <div class="relative bg-black rounded-lg border-2 border-slate-700 overflow-hidden aspect-video lg:aspect-square flex items-center justify-center">
+        <video id="video" class="w-full h-full object-cover"></video>
+        
+        <!-- Laser line -->
+        <div class="absolute inset-x-0 h-0.5 bg-red-500 shadow-[0_0_8px_#ef4444] top-1/2 -translate-y-1/2 pointer-events-none"></div>
+        
+        <!-- Targeting frame -->
+        <div class="absolute inset-8 border border-emerald-500/30 rounded pointer-events-none flex items-center justify-center">
+          <span class="text-[10px] text-emerald-500/50 bg-black/60 px-2 py-0.5 rounded">CONVEYOR TARGET ZONE</span>
+        </div>
+
+        <!-- Camera Off Overlay -->
+        <div id="camera-off-overlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-3 text-slate-400">
+          <svg class="w-12 h-12 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          <span class="text-sm">カメラ停止中</span>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="bg-slate-800 p-4 rounded-lg border border-slate-700 flex flex-col gap-3">
+        <div class="flex gap-2">
+          <button id="btn-start" class="flex-1 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold py-3 px-4 rounded transition text-center">
+            カメラ起動
+          </button>
+          <button id="btn-stop" class="flex-1 bg-slate-700 hover:bg-slate-600 active:bg-slate-800 text-slate-200 font-bold py-3 px-4 rounded transition text-center disabled:opacity-50" disabled>
+            停止
+          </button>
+        </div>
+
+        <!-- Camera Selector -->
+        <div class="flex items-center gap-2">
+          <label for="camera-select" class="text-xs text-slate-400 whitespace-nowrap">カメラ:</label>
+          <select id="camera-select" class="bg-slate-900 border border-slate-700 text-xs rounded p-2 text-slate-200 w-full focus:outline-none focus:border-emerald-500">
+            <option value="">カメラを検出中...</option>
+          </select>
+        </div>
+
+        <!-- Test Simulators -->
+        <div class="border-t border-slate-700 pt-3 mt-1">
+          <div class="text-[11px] text-slate-400 mb-2">テスト用即時スキャン入力:</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="btn-sim-air" class="bg-slate-900 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 py-2 px-2 rounded text-left truncate">
+              ✈ 航空券 (AP Ry0386...)
+            </button>
+            <button id="btn-sim-yamato" class="bg-slate-900 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 py-2 px-2 rounded text-left truncate">
+              📦 ヤマト (4582-1234...)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status Indicator -->
+      <div id="status-box" class="bg-slate-800 p-3 rounded-lg border border-slate-700 text-xs text-slate-400 flex justify-between items-center">
+        <span>ステータス: <strong id="status-text" class="text-slate-200">待機中</strong></span>
+        <span id="scan-count" class="bg-slate-900 px-2 py-1 rounded text-emerald-400 font-bold">読取数: 0</span>
+      </div>
+    </section>
+
+    <!-- Right Column: Scan Table & History -->
+    <section class="lg:col-span-7 flex flex-col gap-4">
+      
+      <!-- Table Header & Clear -->
+      <div class="bg-slate-800 p-4 rounded-lg border border-slate-700 flex justify-between items-center">
+        <div>
+          <h2 class="font-bold text-slate-200 text-base">スキャン履歴</h2>
+          <p class="text-xs text-slate-400">コンベア通過バーコード一覧</p>
+        </div>
+        <button id="btn-clear" class="bg-rose-900/40 hover:bg-rose-800/60 border border-rose-700/50 text-rose-300 text-xs px-3 py-2 rounded transition flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+          全履歴を削除
+        </button>
+      </div>
+
+      <!-- Table Container -->
+      <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden flex-1 flex flex-col">
+        <div class="overflow-x-auto flex-1">
+          <table class="w-full text-left text-xs text-slate-300">
+            <thead class="bg-slate-900/80 text-slate-400 border-b border-slate-700 sticky top-0 uppercase tracking-wider">
+              <tr>
+                <th class="p-3">時刻</th>
+                <th class="p-3">種別</th>
+                <th class="p-3">コード / 便名</th>
+                <th class="p-3">お名前 / 伝票番号</th>
+                <th class="p-3">行き先 / 状態</th>
+                <th class="p-3 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="scan-table-body" class="divide-y divide-slate-700/50">
+              <!-- Dynamically populated rows -->
+            </tbody>
+          </table>
+          <div id="empty-message" class="p-8 text-center text-slate-500 text-xs">
+            スキャンされたデータはありません
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // --- Global State ---
+    let codeReader = null;
+    let selectedDeviceId = null;
+    let isScanning = false;
+    let scanHistory = [];
+    let lastScannedCode = '';
+    let lastScannedTime = 0;
+    const DUPLICATE_INTERVAL_MS = 2000; // Prevent scanning same code within 2 seconds
+
+    // --- Audio Feedback (Web Audio API) ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playBeep(type = 'success') {
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      if (type === 'success') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1800, audioCtx.currentTime); // Sharp high beep
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.08);
+      }
+    }
+
+    // --- Data Parsing Logic ---
+    function parseCode(rawValue, formatName = '') {
+      const value = rawValue.trim();
+      const now = new Date();
+      const timeStr = now.toTimeString().split(' ')[0];
+
+      // 1. Airline Baggage Tag (AP Ry0386 Mr. Yamada Taro YGJ to HND 26/10/29)
+      const airMatch = value.match(/^AP\s+([A-Z0-9]+)\s+(.+)\s+([A-Z]{3})\s+to\s+([A-Z]{3})\s+(.+)$/i);
+      if (airMatch) {
+        return {
+          id: Date.now(),
+          time: timeStr,
+          type: 'AIR',
+          label: '飛行機',
+          code: airMatch[1], // Flight No / Tag ID
+          name: airMatch[2], // Name
+          dest: `${airMatch[3]} → ${airMatch[4]}`, // Destination
+          raw: value,
+          format: formatName || 'QR_CODE'
+        };
+      }
+
+      // 2. Yamato Transport / Japanese Parcel Tracking (Numeric 12 digits or formatted with dashes)
+      const cleanDigits = value.replace(/[-\s]/g, '');
+      const isYamatoPattern = /^\d{12}$/.test(cleanDigits) || value.includes('YAMATO') || /^\d{4}-\d{4}-\d{4}$/.test(value);
+      
+      if (isYamatoPattern) {
+        // Format as 4-4-4
+        const formattedTracking = cleanDigits.length === 12 
+          ? `${cleanDigits.slice(0,4)}-${cleanDigits.slice(4,8)}-${cleanDigits.slice(8,12)}`
+          : value;
+
+        return {
+          id: Date.now(),
+          time: timeStr,
+          type: 'YAMATO',
+          label: 'ヤマト宅急便',
+          code: formattedTracking,
+          name: '宅急便荷物',
+          dest: '標準配達区間',
+          raw: value,
+          format: formatName || 'CODE_128/ITF'
+        };
+      }
+
+      // 3. Generic Barcode / Unknown Format
+      return {
+        id: Date.now(),
+        time: timeStr,
+        type: 'OTHER',
+        label: '一般コード',
+        code: value.length > 20 ? value.substring(0, 20) + '...' : value,
+        name: '-',
+        dest: formatName || 'BARCODE',
+        raw: value,
+        format: formatName || 'UNKNOWN'
+      };
+    }
+
+    // --- UI Rendering ---
+    function renderTable() {
+      const tbody = document.getElementById('scan-table-body');
+      const emptyMsg = document.getElementById('empty-message');
+      const countEl = document.getElementById('scan-count');
+
+      tbody.innerHTML = '';
+      countEl.textContent = `読取数: ${scanHistory.length}`;
+
+      if (scanHistory.length === 0) {
+        emptyMsg.classList.remove('hidden');
+        return;
+      }
+      emptyMsg.classList.add('hidden');
+
+      scanHistory.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-700/30 transition border-b border-slate-700/40';
+
+        // Badge styling based on type
+        let badgeClass = 'bg-slate-700 text-slate-300';
+        if (item.type === 'AIR') badgeClass = 'bg-sky-900/80 text-sky-300 border border-sky-700';
+        if (item.type === 'YAMATO') badgeClass = 'bg-amber-900/80 text-amber-300 border border-amber-700';
+
+        tr.innerHTML = `
+          <td class="p-3 text-slate-400 font-mono text-[11px]">${item.time}</td>
+          <td class="p-3">
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold ${badgeClass}">
+              ${item.label}
+            </span>
+          </td>
+          <td class="p-3 font-bold text-slate-100">${escapeHtml(item.code)}</td>
+          <td class="p-3 text-slate-300">${escapeHtml(item.name)}</td>
+          <td class="p-3 text-emerald-400 font-bold">${escapeHtml(item.dest)}</td>
+          <td class="p-3 text-right">
+            <button onclick="deleteItem(${item.id})" class="text-slate-500 hover:text-rose-400 p-1 transition" title="削除">
+              ✕
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+    }
+
+    // --- Storage Handling ---
+    function saveHistory() {
+      localStorage.setItem('baggage_scan_history', JSON.stringify(scanHistory));
+    }
+
+    function loadHistory() {
+      const saved = localStorage.getItem('baggage_scan_history');
+      if (saved) {
+        try {
+          scanHistory = JSON.parse(saved);
+        } catch (e) {
+          scanHistory = [];
+        }
+      }
+      renderTable();
+    }
+
+    // --- Action Handlers ---
+    function handleScanSuccess(result) {
+      const rawText = result.getText ? result.getText() : result;
+      const format = result.getBarcodeFormat ? result.getBarcodeFormat() : '';
+      const now = Date.now();
+
+      // Duplicate prevention
+      if (rawText === lastScannedCode && (now - lastScannedTime) < DUPLICATE_INTERVAL_MS) {
+        return;
+      }
+
+      lastScannedCode = rawText;
+      lastScannedTime = now;
+
+      // Play Instant Audio Pitch
+      playBeep('success');
+
+      // Process & Save
+      const parsedData = parseCode(rawText, format);
+      scanHistory.unshift(parsedData); // Newest on top
+      saveHistory();
+      renderTable();
+
+      // Brief visual flash on status
+      const statusText = document.getElementById('status-text');
+      statusText.textContent = `読み取り成功: ${parsedData.code}`;
+      statusText.className = 'text-emerald-400 font-bold';
+      setTimeout(() => {
+        statusText.textContent = isScanning ? 'スキャン中...' : '待機中';
+        statusText.className = 'text-slate-200';
+      }, 1500);
+    }
+
+    function deleteItem(id) {
+      scanHistory = scanHistory.filter(item => item.id !== id);
+      saveHistory();
+      renderTable();
+    }
+
+    function clearAllHistory() {
+      if (scanHistory.length === 0) return;
+      if (confirm('すべてのスキャン履歴を削除しますか？')) {
+        scanHistory = [];
+        saveHistory();
+        renderTable();
+      }
+    }
+
+    // --- Scanner Initialization (ZXing) ---
+    async function initScanner() {
+      codeReader = new ZXing.BrowserMultiFormatReader();
+
+      try {
+        const videoInputDevices = await codeReader.listVideoInputDevices();
+        const selectEl = document.getElementById('camera-select');
+        selectEl.innerHTML = '';
+
+        if (videoInputDevices.length === 0) {
+          selectEl.innerHTML = '<option>カメラが見つかりません</option>';
+          return;
+        }
+
+        videoInputDevices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.text = device.label || `Camera ${index + 1}`;
+          selectEl.appendChild(option);
+        });
+
+        // Default to rear camera if available
+        const rearCamera = videoInputDevices.find(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('環境'));
+        selectedDeviceId = rearCamera ? rearCamera.deviceId : videoInputDevices[0].deviceId;
+        selectEl.value = selectedDeviceId;
+
+        selectEl.addEventListener('change', (e) => {
+          selectedDeviceId = e.target.value;
+          if (isScanning) {
+            stopScanning();
+            startScanning();
+          }
+        });
+
+      } catch (err) {
+        console.error('Camera initialization error:', err);
+        document.getElementById('status-text').textContent = 'カメラ初期化エラー';
+      }
+    }
+
+    function startScanning() {
+      if (!codeReader || !selectedDeviceId) return;
+
+      isScanning = true;
+      document.getElementById('camera-off-overlay').classList.add('hidden');
+      document.getElementById('btn-start').disabled = true;
+      document.getElementById('btn-start').classList.add('opacity-50');
+      document.getElementById('btn-stop').disabled = false;
+      document.getElementById('status-text').textContent = 'スキャン中...';
+
+      // Start continuous scanning loop
+      codeReader.decodeFromVideoDevice(selectedDeviceId, 'video', (result, err) => {
+        if (result) {
+          handleScanSuccess(result);
+        }
+      });
+    }
+
+    function stopScanning() {
+      if (!codeReader) return;
+
+      codeReader.reset();
+      isScanning = false;
+      document.getElementById('camera-off-overlay').classList.remove('hidden');
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-start').classList.remove('opacity-50');
+      document.getElementById('btn-stop').disabled = true;
+      document.getElementById('status-text').textContent = '待機中';
+    }
+
+    // --- DOM Event Listeners ---
+    document.addEventListener('DOMContentLoaded', () => {
+      loadHistory();
+      initScanner();
+
+      document.getElementById('btn-start').addEventListener('click', startScanning);
+      document.getElementById('btn-stop').addEventListener('click', stopScanning);
+      document.getElementById('btn-clear').addEventListener('click', clearAllHistory);
+
+      // Simulation Test Buttons
+      document.getElementById('btn-sim-air').addEventListener('click', () => {
+        handleScanSuccess('AP Ry0386 Mr. Yamada Taro YGJ to HND 26/10/29');
+      });
+
+      document.getElementById('btn-sim-yamato').addEventListener('click', () => {
+        handleScanSuccess('458212349876');
+      });
+    });
+  </script>
+</body>
+</html>
